@@ -7,8 +7,10 @@ from torch.distributions import Normal
 import gymnasium as gym
 
 class ActorCritic(nn.Module):
-    def __init__(self, state_dim, action_dim, action_std_init=0.6):
+    def __init__(self, state_dim, action_dim, action_std_init=0.6, device=None):
         super(ActorCritic, self).__init__()
+
+        self.device = device if device is not None else torch.device("cpu")
 
         # Actor network
         self.actor = nn.Sequential(
@@ -17,7 +19,7 @@ class ActorCritic(nn.Module):
             nn.Linear(256, 256),
             nn.ReLU(),
             nn.Linear(256, action_dim),
-        )
+        ).to(self.device)
 
         # Critic network
         self.critic = nn.Sequential(
@@ -26,12 +28,12 @@ class ActorCritic(nn.Module):
             nn.Linear(256, 256),
             nn.ReLU(),
             nn.Linear(256, 1),
-        )
+        ).to(self.device)
 
-        self.action_var = torch.full((action_dim,), action_std_init * action_std_init)
+        self.action_var = torch.full((action_dim,), action_std_init * action_std_init).to(self.device)
 
     def set_action_std(self, new_action_std):
-        self.action_var = torch.full((self.action_var.size()), new_action_std * new_action_std)
+        self.action_var = torch.full((self.action_var.size()), new_action_std * new_action_std).to(self.device)
 
     def forward(self, state):
         raise NotImplementedError
@@ -68,7 +70,7 @@ class ActorCritic(nn.Module):
         return action_logprobs, state_value, dist_entropy
 
 class PPOAgent:
-    def __init__(self, state_dim, action_dim, action_std_init=0.6, lr=3e-4, gamma=0.99, eps_clip=0.2, K_epochs=4, update_timestep=40000):
+    def __init__(self, state_dim, action_dim, action_std_init=0.6, lr=3e-4, gamma=0.99, eps_clip=0.2, K_epochs=4, update_timestep=40000, gae_lambda=0.95, device=None):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.action_std = action_std_init
@@ -77,14 +79,18 @@ class PPOAgent:
         self.eps_clip = eps_clip
         self.K_epochs = K_epochs
         self.update_timestep = update_timestep
+        self.gae_lambda = gae_lambda
 
-        self.policy = ActorCritic(state_dim, action_dim, action_std_init)
+        # Set device
+        self.device = device if device is not None else torch.device("cpu")
+
+        self.policy = ActorCritic(state_dim, action_dim, action_std_init, device=self.device)
         self.optimizer = optim.Adam([
             {'params': self.policy.actor.parameters(), 'lr': self.lr},
             {'params': self.policy.critic.parameters(), 'lr': self.lr}
         ])
 
-        self.policy_old = ActorCritic(state_dim, action_dim, action_std_init)
+        self.policy_old = ActorCritic(state_dim, action_dim, action_std_init, device=self.device)
         self.policy_old.load_state_dict(self.policy.state_dict())
 
         self.MseLoss = nn.MSELoss()
@@ -94,7 +100,7 @@ class PPOAgent:
     
     def select_action(self, state):
         with torch.no_grad():
-            state = torch.FloatTensor(state).unsqueeze(0)
+            state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
             action, action_logprob = self.policy_old.act(state)
         
         self.memory.append((state, action, action_logprob, 0, False)) # reward and done will be updated later
@@ -130,7 +136,7 @@ class PPOAgent:
             rewards.insert(0, discounted_reward)
             
         # Normalize rewards
-        rewards = torch.tensor(rewards, dtype=torch.float32)
+        rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
         rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
             
         # Convert list to tensor
@@ -155,7 +161,7 @@ class PPOAgent:
             
             # Final PPO loss (negative because we're using gradient descent)
             actor_loss = -torch.min(surr1, surr2).mean()
-            critic_loss = 0.5 * self.MseLoss(state_values, rewards)
+            critic_loss = 0.5 * self.MseLoss(state_values.squeeze(), rewards)
             entropy_loss = -0.01 * dist_entropy.mean()  # Encourage exploration
             
             loss = actor_loss + critic_loss + entropy_loss
@@ -185,10 +191,11 @@ class PPOAgent:
         }, filepath)
         
     @classmethod
-    def load(cls, filepath, state_dim, action_dim):
+    def load(cls, filepath, state_dim, action_dim, device=None):
+        device = device if device is not None else torch.device("cpu")
         agent = cls(state_dim, action_dim)
         
-        checkpoint = torch.load(filepath)
+        checkpoint = torch.load(filepath, map_location=device)
         agent.policy.load_state_dict(checkpoint['policy_state_dict'])
         agent.policy_old.load_state_dict(checkpoint['policy_state_dict'])
         agent.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
