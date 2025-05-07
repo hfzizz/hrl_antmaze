@@ -7,7 +7,7 @@ This project implements and compares Hierarchical Reinforcement Learning (HRL) a
 
 1.  **Clone the repository:**
     ```bash
-    git clone <your-repository-url>
+    git clone <https://github.com/hfzizz/hrl_antmaze>
     cd hrl_antmaze
     ```
 
